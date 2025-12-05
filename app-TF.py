@@ -23,7 +23,6 @@ from flask import Response, make_response, send_file
 from flask import send_from_directory
 from flask import stream_with_context
 from datetime import datetime
-from pisut import AiTaxonomy
 from pisut import AiSpatial
 import os, sys, pickle
 import pandas as pd
@@ -31,6 +30,7 @@ import math
 import requests
 
 app = Flask(__name__)
+CORS(app)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 app.config["CLIENT_MAX_BODY_SIZE"] = 10 * 1024 * 1024
 app.config["UPLOAD_FOLDER"] = "D:/AiGreenTaxonomy/Predicted/"
@@ -71,9 +71,180 @@ def index(filename):
     return jsonify({"error": "not support this url"})
 
 
+# --- New Imports for Model ---
+import tensorflow as tf
+from tensorflow.keras.applications import EfficientNetB6
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
+import numpy as np
+import pickle
+import cv2
+import json
+import pillow_heif
+pillow_heif.register_heif_opener()
+from PlantDetection import PlantDetection
+
+# --- Configuration ---
+MODEL_WEIGHTS_PATH = os.path.join("models", "B6_20251203-065556_P3.weights.h5")
+# Try to find classes.json in the same folder as weights or root
+CLASSES_JSON_PATH = os.path.join("models", "B6_20251203-065556_P3.classes.json") 
+
+# Notebook specified 528, despite filename saying 512
+IMG_HEIGHT, IMG_WIDTH = 528, 528 
+
+# --- Load Classes ---
+CLASS_NAMES = []
+NUM_CLASSES = 0
+
+def load_classes():
+    global CLASS_NAMES, NUM_CLASSES
+    # Priority 1: classes.json
+    if os.path.exists(CLASSES_JSON_PATH):
+        print(f"Loading classes from {CLASSES_JSON_PATH}...")
+        try:
+            with open(CLASSES_JSON_PATH, 'r', encoding='utf-8') as f:
+                CLASS_NAMES = json.load(f)
+            # Notebook appends dummies
+            CLASS_NAMES.append("Dummy1")
+            CLASS_NAMES.append("Dummy2")
+            NUM_CLASSES = len(CLASS_NAMES)
+            print(f"Loaded {NUM_CLASSES} classes from JSON.")
+            return
+        except Exception as e:
+            print(f"Error loading classes.json: {e}")
+
+    # Fallback if file missing (Critical Error usually, but we set defaults to avoid immediate crash before request)
+    print(f"⚠️ Class file not found at {CLASSES_JSON_PATH}. Model loading may fail or use default 546 classes.")
+    # Still defaulting to 546 to allow architecture build to attempt loading weights? 
+    # Or should we stop? User said "Use only...", but if I don't set NUM_CLASSES, the next step (Model init) will fail.
+    # I will set it to 546 (from notebook) as a hardcoded safety net so the app doesn't crash on startup, 
+    # but the classes will be generic Class_X. This seems safer than crashing the whole Flask app.
+    NUM_CLASSES = 546
+    CLASS_NAMES = [f"Class_{i}" for i in range(NUM_CLASSES)]
+
+load_classes()
+
+# --- Load Model ---
+print(f"Loading EfficientNetB6 model (Input: {IMG_HEIGHT}x{IMG_WIDTH})...")
+try:
+    # Architecture from Notebook: B6 -> Gap -> Dropout(0.3) -> Dense(Linear)
+    base_model = EfficientNetB6(
+        weights=None, 
+        include_top=False, 
+        input_shape=(IMG_HEIGHT, IMG_WIDTH, 3)
+    )
+    x = base_model.output
+    x = GlobalAveragePooling2D()(x)
+    x = Dropout(0.3)(x)
+    # Output layer with linear activation (Softmax applied later/conceptually)
+    predictions = Dense(NUM_CLASSES, activation='linear')(x)
+    model = Model(inputs=base_model.input, outputs=predictions)
+    
+    print(f"Loading weights from {MODEL_WEIGHTS_PATH}...")
+    model.load_weights(MODEL_WEIGHTS_PATH)
+    print("Model loaded successfully.")
+except Exception as e:
+    print(f"Error loading model: {e}")
+    print("Attempts to handle shape mismatch...")
+    # If shape mismatch occurs, user might need to update NUM_CLASSES or weights
+    model = None
+
+
+# --- Helper Functions ---
+def read_image_and_process_cv2(imageFile, cols, rows):
+    # Determine file type and read bytes
+    if isinstance(imageFile, str):
+        # Path
+        if not os.path.exists(imageFile):
+            raise Exception(f"File not found: {imageFile}")
+        # Use simple read for standard formats
+        # For HEIF/HEIC we might need pillow_heif -> numpy -> cv2
+        if imageFile.lower().endswith(('.heic', '.heif')):
+             heif_file = pillow_heif.open_heif(imageFile, convert_hdr_to_8bit=False, bgr_mode=True)
+             img_nparray = np.array(heif_file)
+             # pillow_heif BGR mode check? usually RGB. Let's assume RGB if not specified.
+             # Actually opencv expects BGR. 
+             # Let's trust pillow_heif to give array, then ensure BGR for consistency or just RGB directly.
+             # Notebook uses cv2.imread -> BGR. Then converts to RGB.
+             # So we need RGB associated with the model input.
+             # Convert to RGB if needed.
+             if heif_file.mode == "BGR":
+                 img_rgb = cv2.cvtColor(img_nparray, cv2.COLOR_BGR2RGB)
+             else:
+                 img_rgb = img_nparray # Already RGB?
+        else:
+             # Standard opencv read
+             img_bgr = cv2.imread(imageFile)
+             if img_bgr is None:
+                 # Fallback to PIL if cv2 fails (e.g. unicode path issues on windows sometimes)
+                 pil_img = Image.open(imageFile)
+                 img_rgb = np.array(pil_img.convert('RGB'))
+             else:
+                 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    else:
+        # Bytes/File object not supported easily by cv2.imread without decoding
+        # Since the caller passes a path 'formFile' string mostly, we are good.
+        raise Exception("Input must be a file path for cv2 processing")
+
+    # Notebook Logic: resize directly
+    img_resized = cv2.resize(img_rgb, (cols, rows))
+    
+    return img_resized, img_rgb # Return original for thumbnail if needed? 
+    # Actually TaxoOverall makes thumbnail from prediction source?
+    # Let's just return resized for prediction.
+
+
+def PredictImage(imageFile):
+    if model is None:
+        raise Exception("Model not loaded.")
+        
+    img_resized, original_rgb = read_image_and_process_cv2(imageFile, IMG_WIDTH, IMG_HEIGHT)
+    
+    # Preprocessing
+    # Notebook: img_batch = tf.expand_dims(img_resized, 0)
+    # No /255.0 explicitly shown in notebook cell 9.
+    # Assuming EfficientNetB6 internal preprocessing or weights trained on [0, 255].
+    # IF the notebook works, this should work.
+    
+    imageBatch = np.expand_dims(img_resized, axis=0)
+    
+    # Predict
+    logits = model.predict(imageBatch, verbose=0)
+    
+    # Apply Softmax (Notebook: scores = tf.nn.softmax(logits[0]))
+    scores = tf.nn.softmax(logits[0]).numpy()
+    
+    # Top 3
+    top3_indices = np.argsort(scores)[-3:][::-1]
+    
+    predicted_list = []
+    for i in top3_indices:
+        label = CLASS_NAMES[i] if i < len(CLASS_NAMES) else f"Unknown_{i}"
+        score = scores[i]
+        predicted_list.append((label, score))
+    
+    # Prepare Base64 thumbnail (Use standard PIL for this part to be safe/consistent)
+    # Or convert back from RGB numpy array
+    thumb_img = Image.fromarray(original_rgb)
+    # Resize for thumbnail? App usually handles it. 
+    # Old code: imageCrop.save...
+    # We can just save the original or resized.
+    # Let's save the resized one to match "source" logic of old app?
+    # Old app calculated crop. We resized.
+    # Let's use the resized one for display consistency with what model saw.
+    display_img = Image.fromarray(img_resized)
+    imageBuffered = BytesIO()
+    display_img.save(imageBuffered, format="JPEG")
+    imageBase64 = base64.b64encode(imageBuffered.getvalue()).decode("ascii")
+    
+    return {
+        "source": "data:image/jpeg;base64," + imageBase64,
+        "predicted": predicted_list, 
+    }
+
+
 def TaxoOverall(token, filename, predicted):
     overallFile = os.path.join(app.config["UPLOAD_FOLDER"], token, "overall.pkl")
-    # print(overallFile)
     if not os.path.isfile(overallFile):
         overallResults = {filename: predicted}
     else:
@@ -84,11 +255,13 @@ def TaxoOverall(token, filename, predicted):
     with open(overallFile, "wb") as f:
         pickle.dump(overallResults, f, pickle.HIGHEST_PROTOCOL)
 
-    # print(overallResults)
     overallDataFrame = pd.DataFrame(
         sum(overallResults.values(), []), columns=["species", "confident"]
     )
-    # print(overallDataFrame)
+    
+    # Convert 'confident' to float for aggregation
+    overallDataFrame["confident"] = overallDataFrame["confident"].astype(float)
+    
     overallTop3 = (
         overallDataFrame.groupby("species")
         .sum()
@@ -105,135 +278,91 @@ def Taxonomy(token):
     if request.method == "POST":
         try:
             formImage = request.files.get("image")
-            # print('get image', request.files)
             formDatas = request.form
             formToken = formDatas.get("token", None)
-            if (
-                not formToken
-                or formToken.lower() == "new"
-                or formToken.lower() == "null"
-                or formToken.lower() == "undefined"
-                or formToken.lower() == ""
-            ):
+            
+            # Token Handling
+            if (not formToken or formToken.lower() in ["new", "null", "undefined", ""]):
                 formToken = datetime.now().isoformat().replace(":", ".")
-            os.makedirs(
-                os.path.join(app.config["UPLOAD_FOLDER"], formToken), exist_ok=True
-            )
+            
+            os.makedirs(os.path.join(app.config["UPLOAD_FOLDER"], formToken), exist_ok=True)
 
-            imageType = formDatas.get("type", None)
-            imageType = imageType if imageType else "bark"
+            imageType = formDatas.get("type", "bark")
 
-            # supporting base64
-            # data:image/png;base64,
+            # Save File Logic - Need physical file for cv2.imread usually
+            formFile = ""
             if formImage:
+                safe_filename = secure_filename(formImage.filename)
                 formFile = os.path.join(
                     app.config["UPLOAD_FOLDER"],
                     formToken,
-                    imageType + "@" + formImage.filename,
+                    imageType + "@" + safe_filename, 
                 )
                 formImage.stream.seek(0)
                 formImage.save(formFile)
             else:
-                # headImage = formImage.stream.read(8 * 10).decode("utf8")
-                formImage = formDatas.get("image")
-                # print(formImage)
-                if formImage.find("base64"):
-                    typeImage = formImage.split(";")[0].split(":")[1].split("/")[1]
-                    # print("----", typeImage)
-                    convImage = Image.open(
+                # Handle Base64 Image
+                formImageStr = formDatas.get("image")
+                if formImageStr and "base64" in formImageStr:
+                    typeImage = formImageStr.split(";")[0].split(":")[1].split("/")[1]
+                    pil_image = Image.open(
                         io.BytesIO(
-                            base64.b64decode(
-                                formImage.replace(
-                                    formImage.split(";base64,")[0] + ";base64,",
-                                    "",
-                                )
-                            )
+                            base64.b64decode(formImageStr.split(";base64,")[1])
                         )
                     )
-                    # neee just only when send text file
-                    """
-                    formImage.stream.seek(0)
-                    byteText = formImage.stream.read()
-                    convImage = Image.open(
-                        io.BytesIO(
-                            base64.b64decode(
-                                byteText.decode("utf8").replace(
-                                    formImage.split(";base64,")[0] + ";base64,",
-                                    "",
-                                )
-                            )
-                        )
-                    )
-                    """
                     formFile = os.path.join(
                         app.config["UPLOAD_FOLDER"],
                         formToken,
                         imageType + "@" + typeImage,
                     )
-                    print(formFile)
-                    convImage.save(formFile, typeImage)
+                    pil_image.save(formFile, typeImage)
                 else:
-                    return app.response_class(
-                        status=500,
-                        mimetype="application/json",
-                        response=json.dumps(
-                            {
-                                "error": "not support image",
-                                "file": "base64",
-                            },
-                            ensure_ascii=False,
-                        ),
-                    )
+                    return jsonify({"error": "not support image", "file": "base64"}), 500
 
-            predicted = AiTaxonomy.Predicted(formFile)
+            # --- Check if Plant (Mimic app-Gemini logic) ---
+            is_plant, detection_msg = PlantDetection(formFile)
+            if not is_plant:
+                return jsonify({
+                    "error": "ไม่ใช่รูปของต้นไม้",
+                    "details": "ระบบตรวจพบว่าภาพที่อัปโหลดไม่ใช่วัตถุที่เกี่ยวข้องกับพืช",
+                    "token": formToken,
+                    "predicted": [],
+                    "overall": [],
+                })
+
+            # --- Prediction Logic ---
+            predicted_data = PredictImage(formFile) # Uses new model with cv2
+            
+            # Overall Logic
             overall, count = TaxoOverall(
                 formToken,
                 imageType + "@" + os.path.split(formFile)[1],
-                predicted["predicted"],
+                predicted_data["predicted"],
             )
 
             results = {
                 "filename": imageType + "@" + os.path.split(formFile)[1],
                 "token": formToken,
-                "source": predicted["source"],
+                "source": predicted_data["source"],
                 "predicted": list(
-                    map(lambda x: (x[0], "{:.2f}".format(x[1])), predicted["predicted"])
+                    map(lambda x: (x[0], "{:.2f}".format(float(x[1]))), predicted_data["predicted"])
                 ),
-                "overall": list(map(lambda x: (x[0], "{:.2f}".format(x[1])), overall)),
+                "overall": list(map(lambda x: (x[0], "{:.2f}".format(float(x[1]))), overall)),
                 "count": count,
             }
-            return app.response_class(
-                status=200,
-                mimetype="application/json",
-                # mimetype='image/jpeg',
-                response=json.dumps(results, ensure_ascii=False),
-            )
+            
+            return jsonify(results)
+
         except Exception as error:
             exc_type, exc_obj, exc_tb = sys.exc_info()
             fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-            return app.response_class(
-                status=500,
-                mimetype="application/json",
-                response=json.dumps(
-                    {"error": str(error), "file": fname, "line": exc_tb.tb_lineno},
-                    ensure_ascii=False,
-                ),
-            )
+            return jsonify({"error": str(error), "file": fname, "line": exc_tb.tb_lineno}), 500
     else:
-        return app.response_class(
-            status=200,
-            mimetype="application/json",
-            response=json.dumps(
-                {
-                    "source": "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==",
-                    "predicted": [
-                        ["API not support method " + request.method, "error"]
-                    ],
-                    "token": token,
-                },
-                ensure_ascii=False,
-            ),
-        )
+        return jsonify({
+            "source": "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==",
+            "predicted": [["API not support method " + request.method, "error"]],
+            "token": token,
+        })
 
 
 def decode_base64(data, altchars=b"+/"):

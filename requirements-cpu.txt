@@ -1,0 +1,17 @@
+markupsafe
+werkzeug
+Flask
+flask_swagger_ui
+flask_cors
+joblib
+pandas
+opencv-python
+numpy
+keras
+tensorflow-cpu
+ipython
+matplotlib
+pillow
+pillow_heif
+
+google-cloud-aiplatform

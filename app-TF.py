@@ -359,6 +359,7 @@ def Taxonomy(token):
             )
 
             results = {
+                "version": "EfficientNetB6@20251203-065556",
                 "filename": imageType + "@" + os.path.split(formFile)[1],
                 "token": formToken,
                 "source": predicted_data["source"],

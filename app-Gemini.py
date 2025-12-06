@@ -328,6 +328,7 @@ def Taxonomy(token):
 
         return jsonify(
             {
+                "version": "EfficientNetB6@20251203-065556",
                 "filename": relative_filename,
                 "token": form_token,
                 "source": source_preview,

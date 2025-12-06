@@ -288,8 +288,10 @@ def TaxoOverall(token, filename, predicted):
 
     return overallTop3.reset_index().to_numpy().tolist(), len(overallResults.keys())
 
+#***********************************************************
+AiTaxonomyVersion = "EfficientNetB6@20251203-065556"
 
-@app.route("/ai/taxonomy/<token>", methods=["GET", "POST"])
+@app.route("/aitaxonomy/<token>", methods=["GET", "POST"])
 def Taxonomy(token):
     if request.method == "POST":
         try:
@@ -333,7 +335,10 @@ def Taxonomy(token):
                     )
                     pil_image.save(formFile, typeImage)
                 else:
-                    return jsonify({"error": "not support image", "file": "base64"}), 500
+                    return jsonify({
+                        "version": AiTaxonomyVersion,
+                        "error": "not support image", "file": "base64"
+                        }), 500
 
             # --- Check if Plant (Mimic app-Gemini logic) ---
             if False:# TODO: Detect more accurate plant (Now Skip)
@@ -341,6 +346,7 @@ def Taxonomy(token):
                 if not is_plant: 
                     print(is_plant, detection_msg)
                     return jsonify({
+                "version": AiTaxonomyVersion,
                         "error": "ไม่ใช่รูปของต้นไม้",
                         "details": "ระบบตรวจพบว่าภาพที่อัปโหลดไม่ใช่วัตถุที่เกี่ยวข้องกับพืช",
                         "token": formToken,
@@ -359,7 +365,7 @@ def Taxonomy(token):
             )
 
             results = {
-                "version": "EfficientNetB6@20251203-065556",
+                "version": AiTaxonomyVersion,
                 "filename": imageType + "@" + os.path.split(formFile)[1],
                 "token": formToken,
                 "source": predicted_data["source"],
@@ -378,6 +384,7 @@ def Taxonomy(token):
             return jsonify({"error": str(error), "file": fname, "line": exc_tb.tb_lineno}), 500
     else:
         return jsonify({
+            "version": AiTaxonomyVersion,
             "source": "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==",
             "predicted": [["API not support method " + request.method, "error"]],
             "token": token,

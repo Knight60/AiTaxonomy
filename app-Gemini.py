@@ -232,7 +232,9 @@ def process_and_resize_image(image_bytes, max_size=1080):
 
 
 # --- Route ---
-@app.route("/ai/taxonomy/<token>", methods=["POST"])
+AiTaxonomyVersion = "Gemini@Flash-2.5"
+
+@app.route("/aitaxonomy/<token>", methods=["POST"])
 def Taxonomy(token):
     try:
         form_token = token
@@ -301,6 +303,7 @@ def Taxonomy(token):
         if len(predicted_data) > 0 and predicted_data[0][0] == "NOT_A_PLANT":
             return jsonify(
                 {
+                    "version": AiTaxonomyVersion,
                     "error": "ไม่ใช่รูปของต้นไม้",
                     "details": "ระบบตรวจพบว่าภาพที่อัปโหลดไม่ใช่วัตถุที่เกี่ยวข้องกับพืช",
                     "token": form_token,
@@ -328,7 +331,7 @@ def Taxonomy(token):
 
         return jsonify(
             {
-                "version": "EfficientNetB6@20251203-065556",
+                "version": AiTaxonomyVersion,
                 "filename": relative_filename,
                 "token": form_token,
                 "source": source_preview,
@@ -341,7 +344,11 @@ def Taxonomy(token):
     except Exception as error:
         exc_type, exc_obj, exc_tb = sys.exc_info()
         return (
-            jsonify({"error": str(error), "file": "app.py", "line": exc_tb.tb_lineno}),
+            jsonify({
+                "version": AiTaxonomyVersion,
+                "error": str(error), 
+                "file": "app.py", 
+                "line": exc_tb.tb_lineno}),
             500,
         )
 

@@ -31,9 +31,14 @@ import requests
 
 app = Flask(__name__)
 CORS(app)
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
-app.config["CLIENT_MAX_BODY_SIZE"] = 10 * 1024 * 1024
-app.config["UPLOAD_FOLDER"] = "D:/AiGreenTaxonomy/Predicted/"
+app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
+app.config["CLIENT_MAX_BODY_SIZE"] = 15 * 1024 * 1024
+import platform
+
+if platform.system() == "Windows":
+    app.config["UPLOAD_FOLDER"] = "D:/AiTaxonomy/Predicted/"
+else:
+    app.config["UPLOAD_FOLDER"] = "/mnt/storage/AiTaxonomy/Predicted/"
 
 ### swagger specific ###
 app.config["PictPath"] = "D:/AiGreenTaxonomy/Plant for Ai Pictures/"
@@ -220,7 +225,7 @@ def PredictImage(imageFile):
     predicted_list = []
     for i in top3_indices:
         label = CLASS_NAMES[i] if i < len(CLASS_NAMES) else f"Unknown_{i}"
-        score = scores[i]
+        score = float(scores[i]) # Convert numpy float to native float for JSON
         predicted_list.append((label, score))
     
     # Prepare Base64 thumbnail (Use standard PIL for this part to be safe/consistent)
@@ -244,17 +249,26 @@ def PredictImage(imageFile):
 
 
 def TaxoOverall(token, filename, predicted):
-    overallFile = os.path.join(app.config["UPLOAD_FOLDER"], token, "overall.pkl")
-    if not os.path.isfile(overallFile):
-        overallResults = {filename: predicted}
-    else:
-        with open(overallFile, "rb") as f:
-            overallResults = pickle.load(f)
-        overallResults[filename] = predicted
+    overallFile = os.path.join(app.config["UPLOAD_FOLDER"], token, "overall.json")
+    overallResults = {}
+    
+    # Load existing (JSON)
+    if os.path.isfile(overallFile):
+        try:
+            with open(overallFile, "r", encoding="utf8") as f:
+                overallResults = json.load(f)
+        except Exception as e:
+            print(f"Error loading overall.json: {e}")
+            overallResults = {}
 
-    with open(overallFile, "wb") as f:
-        pickle.dump(overallResults, f, pickle.HIGHEST_PROTOCOL)
+    # Append new prediction
+    overallResults[filename] = predicted
 
+    # Save (JSON)
+    with open(overallFile, "w", encoding="utf8") as f:
+        json.dump(overallResults, f, indent=2, ensure_ascii=False)
+
+    # Calculate Average
     overallDataFrame = pd.DataFrame(
         sum(overallResults.values(), []), columns=["species", "confident"]
     )
@@ -268,6 +282,8 @@ def TaxoOverall(token, filename, predicted):
         .sort_values("confident", ascending=False)
         .head(3)
     )
+    
+    # Average = Sum(Conf) / Total Images
     overallTop3["confident"] = overallTop3["confident"] / len(overallResults.keys())
 
     return overallTop3.reset_index().to_numpy().tolist(), len(overallResults.keys())
@@ -279,7 +295,7 @@ def Taxonomy(token):
         try:
             formImage = request.files.get("image")
             formDatas = request.form
-            formToken = formDatas.get("token", None)
+            formToken = token
             
             # Token Handling
             if (not formToken or formToken.lower() in ["new", "null", "undefined", ""]):
@@ -320,15 +336,17 @@ def Taxonomy(token):
                     return jsonify({"error": "not support image", "file": "base64"}), 500
 
             # --- Check if Plant (Mimic app-Gemini logic) ---
-            is_plant, detection_msg = PlantDetection(formFile)
-            if not is_plant:
-                return jsonify({
-                    "error": "ไม่ใช่รูปของต้นไม้",
-                    "details": "ระบบตรวจพบว่าภาพที่อัปโหลดไม่ใช่วัตถุที่เกี่ยวข้องกับพืช",
-                    "token": formToken,
-                    "predicted": [],
-                    "overall": [],
-                })
+            if False:# TODO: Detect more accurate plant (Now Skip)
+                is_plant, detection_msg = PlantDetection(formFile)
+                if not is_plant: 
+                    print(is_plant, detection_msg)
+                    return jsonify({
+                        "error": "ไม่ใช่รูปของต้นไม้",
+                        "details": "ระบบตรวจพบว่าภาพที่อัปโหลดไม่ใช่วัตถุที่เกี่ยวข้องกับพืช",
+                        "token": formToken,
+                        "predicted": [],
+                        "overall": [],
+                    })
 
             # --- Prediction Logic ---
             predicted_data = PredictImage(formFile) # Uses new model with cv2

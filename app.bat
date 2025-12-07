@@ -1,1 +1,1 @@
-py -3.10 app-TF.py
+py -3.10 app_tf.py

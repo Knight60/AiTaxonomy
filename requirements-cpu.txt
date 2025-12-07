@@ -13,5 +13,6 @@ ipython
 matplotlib
 pillow
 pillow_heif
+gunicorn
 
 google-cloud-aiplatform

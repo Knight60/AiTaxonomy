@@ -1,0 +1,17 @@
+[Unit]
+Description=Gunicorn instance to serve the AiTaxonomy Flask app
+After=network.target
+
+[Service]
+User=knight
+Group=www-data
+WorkingDirectory=/home/knight/AiTaxonomy
+# Ensure the virtualenv bin directory is on PATH so gunicorn and python use the venv
+Environment="PATH=/home/knight/AiTaxonomy/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+# Bind to TCP port 8888 on all interfaces instead of unix socket
+ExecStart=/home/knight/AiTaxonomy/.venv/bin/gunicorn --workers 3 --bind 0.0.0.0:8888 -m 007 wsgi:application
+Restart=always
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

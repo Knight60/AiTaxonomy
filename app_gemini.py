@@ -358,8 +358,10 @@ def Taxonomy(token):
 @app.route("/<path:filename>", methods=["GET", "POST"])
 def index(filename):
     filename = filename or "index.html"
-    if filename == "index.html":
-        return redirect("/ai-spatial.html")
+    # Serve index.html directly instead of redirecting to it.
+    # The redirect caused a 302 loop and prevented send_from_directory
+    # from returning the actual file. Leaving filename as "index.html"
+    # allows the GET branch below to call send_from_directory.
     if request.method == "GET":
         if filename.endswith((".html", ".js", ".css")) or filename.startswith("assets"):
             return send_from_directory(".", filename)
@@ -399,7 +401,7 @@ def GetThumbnail():
         buf.seek(0)
         return make_response(buf.getvalue(), 200, {"Content-Type": "image/jpeg"})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return make_response(json.dumps({"error": str(e)}), 500)
 
 
 @app.route("/proxy/<path:url_path>", methods=["GET"])

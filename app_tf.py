@@ -36,12 +36,13 @@ app.config["CLIENT_MAX_BODY_SIZE"] = 15 * 1024 * 1024
 import platform
 
 if platform.system() == "Windows":
-    app.config["UPLOAD_FOLDER"] = "D:/AiTaxonomy/Predicted/"
+    app.config['UPLOAD_FOLDER'] = "D:/AiTaxonomy/Predicted/"
+    app.config['PictPath'] = "E:/Archive/DCCE/AiTaxonomy/All-Field-Pictures/"
 else:
-    app.config["UPLOAD_FOLDER"] = "/mnt/storage/AiTaxonomy/Predicted/"
+    app.config['UPLOAD_FOLDER'] = "/mnt/storage/AiTaxonomy/Predicted/"
+    app.config['PictPath'] = "/mnt/storage/AiTaxonomy/All-Field-Pictures/"
 
 ### swagger specific ###
-app.config["PictPath"] = "D:/AiGreenTaxonomy/Plant for Ai Pictures/"
 
 SWAGGER_URL = "/api/doc"
 API_URL = "https://aigreen.dcce.go.th/rest/"
@@ -61,8 +62,10 @@ def request_entity_too_large(error):
 @app.route("/<path:filename>", methods=["GET", "POST"])
 def index(filename):
     filename = filename or "index.html"
-    if filename == "index.html":
-        return redirect("/ai-spatial.html")
+    # Serve index.html directly instead of redirecting to it.
+    # The previous redirect caused a 302 loop and prevented send_from_directory
+    # from returning the actual file. Leaving filename as "index.html" allows
+    # the GET branch below to call send_from_directory.
 
     if request.method == "GET":
         if (
@@ -153,6 +156,7 @@ except Exception as e:
     print("Attempts to handle shape mismatch...")
     # If shape mismatch occurs, user might need to update NUM_CLASSES or weights
     model = None
+
 
 
 # --- Helper Functions ---
